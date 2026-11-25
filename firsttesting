@@ -1,0 +1,181 @@
+namespace OrderManagement;
+
+internal sealed record Order(string Id, string Customer, string Contact, string Address,
+    string Sku, int Quantity, string Type, string Status);
+internal sealed record StatusChange(string Id, string Before, string After);
+
+internal static class Program
+{
+    private static readonly CustomSet<string> products = new();
+    private static readonly CustomSet<string> warehouseA = new(), warehouseB = new();
+    private static readonly CustomMap<string, Order> orders = new();
+    private static readonly CustomQueue<string> packaging = new();
+    private static readonly CustomPriorityQueue<string> dispatch = new();
+    private static readonly CustomStack<StatusChange> history = new();
+    private static int nextId = 1;
+
+    private static void Main(string[] args)
+    {
+        if (args.Length > 0 && args[0] == "--self-test") { SelfTests.Run(); return; }
+        Console.WriteLine("E-COMMERCE ORDER MANAGEMENT\nData lasts for this session only.");
+        try
+        {
+            while (true)
+            {
+                Console.WriteLine("\n1 Manage products / warehouses\n2 Add order\n3 Process standard packaging\n4 Dispatch Express/VIP order\n5 Update order status\n6 Undo last status update\n7 Search order\n8 View pending lines\n0 Exit");
+                switch (Read("Choice: "))
+                {
+                    case "1": Products(); break;
+                    case "2": AddOrder(); break;
+                    case "3": Package(); break;
+                    case "4": Dispatch(); break;
+                    case "5": Update(); break;
+                    case "6": Undo(); break;
+                    case "7": Show(Find()); break;
+                    case "8": View(); break;
+                    case "0": return;
+                    default: Console.WriteLine("Choose a listed option."); break;
+                }
+            }
+        }
+        catch (EndOfStreamException) { Console.WriteLine("\nInput closed. Goodbye."); }
+    }
+    private static string Read(string prompt)
+    {
+        while (true)
+        {
+            Console.Write(prompt);
+            string text = Console.ReadLine() ?? throw new EndOfStreamException();
+            if (!string.IsNullOrWhiteSpace(text)) return text.Trim();
+            Console.WriteLine("Required field.");
+        }
+    }
+    private static int PositiveInt(string prompt)
+    {
+        while (true)
+        { if (int.TryParse(Read(prompt), out int value) && value > 0) return value;
+          Console.WriteLine("Enter a positive whole number."); }
+    }
+    private static void Products()
+    {
+        Console.WriteLine("1 Register SKU in warehouse A/B\n2 View registry\n3 Compare warehouses");
+        switch (Read("Choice: "))
+        {
+            case "1":
+                string location = Read("Warehouse (A/B): ").ToUpperInvariant();
+                if (location != "A" && location != "B") { Console.WriteLine("Invalid warehouse."); return; }
+                string sku = Read("Product SKU: ").ToUpperInvariant();
+                bool added = products.Add(sku);
+                bool assigned = (location == "A" ? warehouseA : warehouseB).Add(sku);
+                Console.WriteLine(added ? "New SKU registered." : "SKU already registered; no duplicate created.");
+                Console.WriteLine(assigned ? "Added to warehouse." : "Already in this warehouse.");
+                break;
+            case "2": PrintSet("Product registry", products); break;
+            case "3":
+                PrintSet("Union: all SKUs in A or B", warehouseA.Union(warehouseB));
+                PrintSet("Intersection: SKUs in both", warehouseA.Intersection(warehouseB));
+                PrintSet("Difference: A only", warehouseA.Difference(warehouseB));
+                PrintSet("Difference: B only", warehouseB.Difference(warehouseA)); break;
+            default: Console.WriteLine("Invalid option."); break;
+        }
+    }
+    private static void PrintSet(string label, CustomSet<string> set)
+    { Console.WriteLine($"{label} ({set.Count}):"); set.Visit(Console.WriteLine); }
+    private static void AddOrder()
+    {
+        string sku = Read("Product SKU: ").ToUpperInvariant();
+        if (!products.Contains(sku)) { Console.WriteLine("Register this SKU first."); return; }
+        string customer = Read("Customer: "), contact = Read("Contact: "), address = Read("Shipping address: ");
+        int quantity = PositiveInt("Quantity: ");
+        string choice = Read("Type (1 Regular, 2 Express, 3 VIP): ");
+        if (choice != "1" && choice != "2" && choice != "3") { Console.WriteLine("Invalid type; order not created."); return; }
+        string type = choice == "1" ? "Regular" : choice == "2" ? "Express" : "VIP";
+        string id = $"ORD-{nextId++:D3}";
+        var order = new Order(id, customer, contact, address, sku, quantity, type, "Pending");
+        orders.Put(id, order);
+        // Regular packaging is FIFO. Express/VIP packing is performed via status menu.
+        if (type == "Regular") packaging.Enqueue(id);
+        Show(order);
+        Console.WriteLine(type == "Regular" ? "Added to standard packaging line." : "Use Update status to process and pack; packed orders enter priority dispatch.");
+    }
+    private static Order? Find()
+    {
+        string id = Read("Order ID: ").ToUpperInvariant();
+        if (orders.TryGetValue(id, out var order)) return order;
+        Console.WriteLine("Order not found."); return null;
+    }
+    private static void Show(Order? order)
+    {
+        if (order is null) return;
+        Console.WriteLine($"\n{order.Id} | {order.Type} | {order.Status}\nCustomer: {order.Customer}\nContact: {order.Contact}\nShip to: {order.Address}\nSKU: {order.Sku} | Quantity: {order.Quantity}");
+    }
+    private static bool Confirm() => Read("Confirm (Y/N): ").Equals("Y", StringComparison.OrdinalIgnoreCase);
+    private static void Change(Order order, string status)
+    {
+        if (order.Status == "Packed" && order.Type != "Regular") dispatch.RemoveWhere(id => id == order.Id);
+        history.Push(new StatusChange(order.Id, order.Status, status));
+        orders.Put(order.Id, order with { Status = status });
+        Console.WriteLine($"{order.Id}: {order.Status} -> {status}");
+    }
+    private static void Package()
+    {
+        // Undo may leave obsolete tickets. Skip tickets that are no longer eligible.
+        while (packaging.Count > 0)
+        {
+            string id = packaging.Dequeue();
+            if (!orders.TryGetValue(id, out var order) || order.Status != "Pending") continue;
+            Change(order, "Processing"); return;
+        }
+        Console.WriteLine("No pending standard orders.");
+    }
+    private static void Update()
+    {
+        var order = Find(); if (order is null) return;
+        string? next = order.Status switch
+        {
+            "Pending" when order.Type != "Regular" => "Processing",
+            "Processing" => "Packed",
+            "Packed" when order.Type == "Regular" => "Shipped",
+            "Shipped" => "Delivered",
+            _ => null
+        };
+        if (next is null)
+        { Console.WriteLine(order.Status == "Pending" ? "Use standard packaging menu." : order.Status == "Packed" ? "Use priority dispatch menu." : "No further transition."); return; }
+        Console.WriteLine($"Next status: {next}"); if (!Confirm()) return;
+        Change(order, next);
+        if (next == "Packed" && order.Type != "Regular") dispatch.Enqueue(order.Id, order.Type == "VIP" ? 2 : 1);
+    }
+    private static void Dispatch()
+    {
+        while (dispatch.Count > 0)
+        {
+            string id = dispatch.Dequeue();
+            if (!orders.TryGetValue(id, out var order) || order.Status != "Packed") continue;
+            Change(order, "Shipped"); return;
+        }
+        Console.WriteLine("No packed Express/VIP orders ready to dispatch.");
+    }
+    private static void Undo()
+    {
+        if (history.Count == 0) { Console.WriteLine("Nothing to undo."); return; }
+        var change = history.Peek();
+        Console.WriteLine($"Undo {change.Id}: {change.After} -> {change.Before}");
+        if (!Confirm()) return;
+        if (!orders.TryGetValue(change.Id, out var order) || order.Status != change.After)
+            throw new InvalidOperationException("History does not match current state.");
+        history.Pop();
+        if (order.Type != "Regular") dispatch.RemoveWhere(id => id == order.Id);
+        orders.Put(order.Id, order with { Status = change.Before });
+        if (change.Before == "Pending" && order.Type == "Regular") packaging.Enqueue(order.Id);
+        if (change.Before == "Packed" && order.Type != "Regular") dispatch.Enqueue(order.Id, order.Type == "VIP" ? 2 : 1);
+        Console.WriteLine("Status restored. If requeued, order rejoins the end of its priority group.");
+    }
+    private static void View()
+    {
+        Console.WriteLine("STANDARD PACKAGING (FIFO):");
+        var shown = new CustomSet<string>();
+        packaging.Visit(id => { if (orders.TryGetValue(id, out var o) && o.Status == "Pending" && shown.Add(id)) Console.WriteLine($"{id} | {o.Customer}"); });
+        Console.WriteLine("EXPRESS/VIP DISPATCH (VIP first; packed orders only):");
+        dispatch.Visit(id => { if (orders.TryGetValue(id, out var o) && o.Status == "Packed" && shown.Add(id)) Console.WriteLine($"{id} | {o.Customer} | {o.Type}"); });
+    }
+}
