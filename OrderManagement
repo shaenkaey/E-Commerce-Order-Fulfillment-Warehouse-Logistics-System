@@ -1,0 +1,38 @@
+namespace OrderManagement;
+
+internal static class SelfTests
+{
+    private static int checks;
+    private static void Check(bool condition, string name)
+    { if (!condition) throw new Exception("FAIL: " + name); checks++; Console.WriteLine("PASS: " + name); }
+    private static bool Throws(Action action)
+    { try { action(); return false; } catch (InvalidOperationException) { return true; } }
+    public static void Run()
+    {
+        var stack = new CustomStack<int>();
+        Check(Throws(() => stack.Pop()), "Empty stack is guarded");
+        stack.Push(1); stack.Push(2);
+        Check(stack.Peek() == 2 && stack.Count == 2 && stack.Pop() == 2 && stack.Pop() == 1, "Stack LIFO and Peek");
+        var queue = new CustomQueue<int>();
+        Check(Throws(() => queue.Dequeue()), "Empty queue is guarded");
+        queue.Enqueue(1); queue.Enqueue(2);
+        Check(queue.Dequeue() == 1 && queue.Dequeue() == 2, "Queue FIFO");
+        queue.Enqueue(3); Check(queue.Dequeue() == 3 && queue.Count == 0, "Queue reusable after draining");
+        var priority = new CustomPriorityQueue<string>();
+        priority.Enqueue("express1", 1); priority.Enqueue("vip1", 2);
+        priority.Enqueue("vip2", 2); priority.Enqueue("express2", 1);
+        Check(priority.Dequeue() == "vip1" && priority.Dequeue() == "vip2", "VIP first; stable priority ties");
+        priority.RemoveWhere(value => value == "express1");
+        Check(priority.Count == 1 && priority.Dequeue() == "express2", "Remove obsolete dispatch ticket");
+        Check(Throws(() => priority.Dequeue()), "Empty priority queue is guarded");
+        var a = new CustomSet<int>(); var b = new CustomSet<int>();
+        for (int i = 0; i < 20; i++) a.Add(i);
+        b.Add(19); b.Add(20);
+        Check(!a.Add(0) && a.Count == 20, "Set uniqueness and array growth");
+        Check(a.Union(b).Count == 21 && a.Intersection(b).Count == 1 && a.Difference(b).Count == 19, "Set union/intersection/difference");
+        var map = new CustomMap<string, int>(1); // Force every key to collide.
+        map.Put("A", 1); map.Put("B", 2); map.Put("A", 3);
+        Check(map.Count == 2 && map.TryGetValue("A", out int v) && v == 3 && map.TryGetValue("B", out v) && v == 2, "Map collision chaining and replacement");
+        Check(!map.TryGetValue("missing", out _), "Missing map key");
+        Console.WriteLine($"All {checks} checks passed.");
+    }
